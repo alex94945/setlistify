@@ -1,1 +1,0 @@
-# future will scrape all latest setlists not just the latest one, then de-dupe
