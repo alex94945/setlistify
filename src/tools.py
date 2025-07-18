@@ -40,7 +40,7 @@ def get_latest_setlist(artist_name: str, count: int = 1) -> list:
     resp = requests.get(setlist_url, headers=headers)
     resp.raise_for_status()
     setlists = resp.json().get("setlist", [])
-    print("Raw setlists JSON:", setlists)
+    # print("Raw setlists JSON:", setlists)
     if not setlists:
         return [{"error": f"No setlists found for artist '{artist_name}'."}]
     # Limit to the requested count
@@ -53,6 +53,7 @@ def get_latest_setlist(artist_name: str, count: int = 1) -> list:
             "venue": latest.get("venue", {}).get("name"),
             "city": latest.get("venue", {}).get("city", {}).get("name"),
             "country": latest.get("venue", {}).get("city", {}).get("country", {}).get("name"),
+            "url": latest.get("url"),
             # Collect all song names from all sets (main set, encores, etc), skipping None values
             "setlist": [
                 song.get("name")
