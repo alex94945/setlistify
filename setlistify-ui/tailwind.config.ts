@@ -13,8 +13,9 @@ const config: Config = {
         mono: ['var(--font-geist-mono)'],
       },
       colors: {
+        'purple-accent': '#6d28d9',
         purple: {
-          accent: '#6d28d9',
+          '700': '#6d28d9',
         },
         spotify: {
           green: '#1DB954',
