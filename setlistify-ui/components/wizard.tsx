@@ -35,9 +35,9 @@ export default function Wizard() {
   const prev = () => setStep((s) => Math.max(s - 1, 0));
 
   return (
-    <div className="flex flex-col items-center space-y-8">
+    <div className="flex flex-col items-center space-y-8 h-full">
       <ProgressStepper currentStep={step} />
-      <div className="w-full">
+      <div className="w-full flex-grow overflow-y-auto">
         {steps[step]}
       </div>
       <div className="flex justify-between w-full max-w-2xl">
