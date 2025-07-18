@@ -1,0 +1,287 @@
+Directory structure:
+└── setlistify/
+    ├── requirements.txt
+    ├── .env-example
+    ├── src/
+    │   ├── __init__.py
+    │   ├── agent.py
+    │   ├── config.py
+    │   ├── llm.py
+    │   └── tools.py
+    ├── tests/
+    │   └── test_tools.py
+    └── .windsurf/
+        └── rules/
+            └── code-style-guide.md
+
+================================================
+FILE: requirements.txt
+================================================
+markdownify ~= 1.1
+smolagents ~= 1.20
+together ~= 1.5
+openai ~= 1.97
+python-dotenv ~= 1.1
+spotify ~= 0.10
+
+
+================================================
+FILE: .env-example
+================================================
+TOGETHER_API_KEY="your_together_api_key"
+SETLISTFM_API_KEY="your_setlistfm_api_key"
+SPOTIFY_API_KEY="your_spotify_api_key"
+
+
+
+================================================
+FILE: src/__init__.py
+================================================
+
+
+
+================================================
+FILE: src/agent.py
+================================================
+
+
+
+================================================
+FILE: src/config.py
+================================================
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
+SETLISTFM_API_KEY = os.getenv("SETLISTFM_API_KEY") # Rate limit max. 2.0/second and max. 1440/DAY. (can request upgrade)
+
+
+================================================
+FILE: src/llm.py
+================================================
+import os
+
+from smolagents.models.openai import OpenAIChatModel
+
+model = OpenAIChatModel(
+    model_name="deepseek-ai/DeepSeek-R1",
+    api_key=os.getenv("TOGETHER_API_KEY"),
+)
+
+
+================================================
+FILE: src/tools.py
+================================================
+from smolagents import tool
+
+import os
+import requests
+import time
+from smolagents import tool
+
+SETLISTFM_API_KEY = os.getenv("SETLISTFM_API_KEY")
+SPOTIFY_API_KEY = os.getenv("SPOTIFY_API_KEY")
+
+@tool
+def get_latest_show(artist_name: str, count: int = 1) -> list:
+    """
+    Fetches the latest `count` shows for the given artist name using setlist.fm API.
+
+    Args:
+        artist_name (str): The name of the artist to search for.
+        count (int, optional): How many of the latest shows to retrieve. Defaults to 1.
+
+    Returns:
+        list: A list of dicts, each containing show info, including the setlist.
+    """
+    # Step 1: Find artist MBID
+    search_url = f"https://api.setlist.fm/rest/1.0/search/artists?artistName={artist_name}&p=1&sort=relevance"
+    headers = {
+        "x-api-key": SETLISTFM_API_KEY,
+        "Accept": "application/json"
+    }
+    resp = None
+    for attempt in range(3):
+        try:
+            time.sleep(0.6)  # Keep original sleep to respect rate limits
+            resp = requests.get(search_url, headers=headers)
+            resp.raise_for_status()
+            break  # Break the loop if the request is successful
+        except requests.exceptions.RequestException as e:
+            print(f"Attempt {attempt + 1} failed for artist search: {e}")
+            if attempt < 2:
+                time.sleep(1)  # Wait for 1 second before retrying
+            else:
+                return [{"error": f"Failed to fetch artist after 3 attempts: {e}"}]
+    if resp is None: # Should not happen, but as a safeguard
+        return [{"error": "Failed to get a response from artist search."}]
+    results = resp.json()
+    if not results.get("artist"):
+        return [{"error": f"Artist '{artist_name}' not found."}]
+    artist = results["artist"][0]
+    mbid = artist["mbid"]
+    
+    # Step 2: Get latest shows
+    shows_url = f"https://api.setlist.fm/rest/1.0/artist/{mbid}/setlists?p=1"
+    resp = None
+    for attempt in range(3):
+        try:
+            time.sleep(0.6)  # Keep original sleep to respect rate limits
+            resp = requests.get(shows_url, headers=headers)
+            resp.raise_for_status()
+            break  # Break the loop if the request is successful
+        except requests.exceptions.RequestException as e:
+            print(f"Attempt {attempt + 1} failed for show search: {e}")
+            if attempt < 2:
+                time.sleep(1)  # Wait for 1 second before retrying
+            else:
+                return [{"error": f"Failed to fetch shows after 3 attempts: {e}"}]
+    if resp is None: # Should not happen, but as a safeguard
+        return [{"error": "Failed to get a response from show search."}]
+    shows = resp.json().get("setlist", [])
+    # print("Raw shows JSON:", shows)
+    if not shows:
+        return [{"error": f"No shows found for artist '{artist_name}'."}]
+    # Limit to the requested count
+    shows = shows[:count]
+    result = []
+    for show in shows:
+        info = {
+            "artist": artist.get("name"),
+            "event_date": show.get("eventDate"),
+            "venue": show.get("venue", {}).get("name"),
+            "city": show.get("venue", {}).get("city", {}).get("name"),
+            "country": show.get("venue", {}).get("city", {}).get("country", {}).get("name"),
+            "url": show.get("url"),
+            # Collect all song names from all sets (main set, encores, etc), skipping None values
+            "setlist": [
+                song.get("name")
+                for set_block in show.get("sets", {}).get("set", [])
+                for song in set_block.get("song", [])
+                if song.get("name")
+            ],
+        }
+        result.append(info)
+    return result
+
+
+@tool
+def extract_setlist(shows: list) -> list:
+    """
+    Extracts a de-duplicated list of songs from a list of shows.
+
+    Args:
+        shows (list): A list of show dictionaries, as returned by get_latest_show.
+
+    Returns:
+        list: A de-duplicated list of song names.
+    """
+    all_songs = set()
+    for show in shows:
+        all_songs.update(show.get("setlist", []))
+    return list(all_songs)
+
+@tool
+def create_spotify_playlist():
+    pass
+
+
+
+================================================
+FILE: tests/test_tools.py
+================================================
+import os
+import pytest
+import src.config
+import time
+
+from src.tools import get_latest_show, extract_setlist
+
+# Make sure the SETLISTFM_API_KEY is set for the test environment
+@pytest.mark.skipif(
+    not os.getenv("SETLISTFM_API_KEY"),
+    reason="SETLISTFM_API_KEY not set in environment"
+)
+def test_get_latest_show_basic():
+    # Wait to comply with setlist.fm API rate limit (max 2/sec)
+    time.sleep(0.6)
+    # Use a well-known artist for a predictable result
+    artist_name = "Metallica"
+    result = get_latest_show(artist_name, count=1)
+    print("Show result:", result)
+    assert isinstance(result, list)
+    assert len(result) == 1
+    show = result[0]
+    assert "artist" in show and show["artist"].lower() == "metallica"
+    assert "setlist" in show and isinstance(show["setlist"], list)
+    assert show["setlist"]  # Should not be empty
+    assert "event_date" in show
+    assert "venue" in show
+    assert "city" in show
+    assert "country" in show
+
+def test_get_latest_show_multiple():
+    # Wait to comply with setlist.fm API rate limit (max 2/sec)i
+    time.sleep(0.6)
+    artist_name = "Metallica"
+    result = get_latest_show(artist_name, count=3)
+    print("Shows (3) result:", result)
+    for i, show in enumerate(result):
+        print(f"Show {i+1} URL:", show.get('url', '<no url>'))
+    assert isinstance(result, list)
+    assert len(result) == 3
+    for show in result:
+        assert "artist" in show and show["artist"].lower() == "metallica"
+        assert "setlist" in show and isinstance(show["setlist"], list)
+        assert show["setlist"]  # Should not be empty
+        assert "event_date" in show
+        assert "venue" in show
+        assert "city" in show
+        assert "country" in show
+
+def test_extract_setlist():
+    # Sample data mimicking the output of get_latest_show
+    sample_shows = [
+        {"setlist": ["Song A", "Song B", "Song C"]},
+        {"setlist": ["Song B", "Song D", "Song E"]},
+        {"setlist": ["Song A", "Song F"]},
+        {"setlist": []} # a show with an empty setlist
+    ]
+    
+    extracted_songs = extract_setlist(sample_shows)
+    print("Extracted songs:", extracted_songs)
+    
+    # Check for de-duplication
+    assert len(extracted_songs) == len(set(extracted_songs))
+    
+    # Check that all unique songs are present
+    expected_songs = {"Song A", "Song B", "Song C", "Song D", "Song E", "Song F"}
+    assert set(extracted_songs) == expected_songs
+
+    # Test with empty input
+    assert extract_setlist([]) == []
+
+
+
+================================================
+FILE: .windsurf/rules/code-style-guide.md
+================================================
+---
+trigger: glob
+globs: tools/*
+---
+
+- All tool definitions must contain a docstring with Args and their types. For example:
+    """
+    Fetches the latest `count` setlists for the given artist name using setlist.fm API.
+
+    Args:
+        artist_name (str): The name of the artist to search for.
+        count (int, optional): How many of the latest setlists to retrieve. Defaults to 1.
+
+    Returns:
+        list: A list of dicts, each containing setlist info.
+    """
+

@@ -3,7 +3,7 @@ import pytest
 import src.config
 import time
 
-from src.tools import get_latest_show, extract_setlist
+from src.tools.setlist_tools import get_latest_show, extract_setlist
 
 # Make sure the SETLISTFM_API_KEY is set for the test environment
 @pytest.mark.skipif(
