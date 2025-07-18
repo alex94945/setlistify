@@ -29,11 +29,13 @@ def test_get_latest_setlist_basic():
     assert "country" in setlist
 
 def test_get_latest_setlist_multiple():
-    # Wait to comply with setlist.fm API rate limit (max 2/sec)
+    # Wait to comply with setlist.fm API rate limit (max 2/sec)i
     time.sleep(0.6)
     artist_name = "Metallica"
     result = get_latest_setlist(artist_name, count=3)
     print("Setlists (3) result:", result)
+    for i, setlist in enumerate(result):
+        print(f"Setlist {i+1} URL:", setlist.get('url', '<no url>'))
     assert isinstance(result, list)
     assert len(result) == 3
     for setlist in result:
