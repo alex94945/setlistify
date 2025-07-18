@@ -3,10 +3,41 @@ from smolagents import tool
 import os
 import requests
 import time
-from smolagents import tool
 
 SETLISTFM_API_KEY = os.getenv("SETLISTFM_API_KEY")
 SPOTIFY_API_KEY = os.getenv("SPOTIFY_API_KEY")
+
+
+@tool
+def search_artist(artist_name: str) -> list:
+    """
+    Searches for an artist by name using the setlist.fm API.
+
+    Args:
+        artist_name (str): The name of the artist to search for.
+
+    Returns:
+        list: A list of artist dictionaries, each containing name, mbid, and disambiguation.
+    """
+    search_url = f"https://api.setlist.fm/rest/1.0/search/artists?artistName={artist_name}&p=1&sort=relevance"
+    headers = {"x-api-key": SETLISTFM_API_KEY, "Accept": "application/json"}
+    try:
+        time.sleep(0.6)  # Respect rate limits
+        resp = requests.get(search_url, headers=headers)
+        resp.raise_for_status()
+        results = resp.json().get("artist", [])
+        return [
+            {
+                "name": artist.get("name"),
+                "mbid": artist.get("mbid"),
+                "disambiguation": artist.get("disambiguation"),
+            }
+            for artist in results
+        ]
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to fetch artist '{artist_name}': {e}")
+        return [{"error": str(e)}]
+
 
 @tool
 def get_latest_show(artist_name: str, count: int = 1) -> list:
@@ -21,30 +52,10 @@ def get_latest_show(artist_name: str, count: int = 1) -> list:
         list: A list of dicts, each containing show info, including the setlist.
     """
     # Step 1: Find artist MBID
-    search_url = f"https://api.setlist.fm/rest/1.0/search/artists?artistName={artist_name}&p=1&sort=relevance"
-    headers = {
-        "x-api-key": SETLISTFM_API_KEY,
-        "Accept": "application/json"
-    }
-    resp = None
-    for attempt in range(3):
-        try:
-            time.sleep(0.6)  # Keep original sleep to respect rate limits
-            resp = requests.get(search_url, headers=headers)
-            resp.raise_for_status()
-            break  # Break the loop if the request is successful
-        except requests.exceptions.RequestException as e:
-            print(f"Attempt {attempt + 1} failed for artist search: {e}")
-            if attempt < 2:
-                time.sleep(1)  # Wait for 1 second before retrying
-            else:
-                return [{"error": f"Failed to fetch artist after 3 attempts: {e}"}]
-    if resp is None: # Should not happen, but as a safeguard
-        return [{"error": "Failed to get a response from artist search."}]
-    results = resp.json()
-    if not results.get("artist"):
-        return [{"error": f"Artist '{artist_name}' not found."}]
-    artist = results["artist"][0]
+    artists = search_artist(artist_name)
+    if not artists or "error" in artists[0]:
+        return artists  # Return error from search_artist
+    artist = artists[0]
     mbid = artist["mbid"]
     
     # Step 2: Get latest shows
@@ -97,16 +108,13 @@ def extract_setlist(shows: list) -> list:
     Extracts a de-duplicated list of songs from a list of shows.
 
     Args:
-        shows (list): A list of show dictionaries, as returned by get_latest_show.
+        shows (list): A list of show dicts, from `get_latest_show`.
 
     Returns:
-        list: A de-duplicated list of song names.
+        list: A de-duplicated list of all songs from all shows.
     """
-    all_songs = set()
+    all_songs = []
     for show in shows:
-        all_songs.update(show.get("setlist", []))
-    return list(all_songs)
-
-@tool
-def create_spotify_playlist():
-    pass
+        all_songs.extend(show.get("setlist", []))
+    # De-duplicate while preserving order
+    return list(dict.fromkeys(all_songs))
