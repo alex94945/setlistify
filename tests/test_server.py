@@ -11,9 +11,9 @@ from src.server import app
 client = TestClient(app)
 
 # Get the token from an environment variable for integration testing
-spotify_token = os.environ.get("SPOTIFY_ACCESS_TOKEN")
+spotify_token = os.environ.get("SPOTIFY_CLIENT_SECRET")
 
-@pytest.mark.skipif(not spotify_token, reason="SPOTIFY_ACCESS_TOKEN environment variable not set")
+@pytest.mark.skipif(not spotify_token, reason="SPOTIFY_CLIENT_SECRET environment variable not set")
 def test_agent_get_setlist_success():
     """
     Tests the /api/agent/setlist endpoint for a successful scenario.

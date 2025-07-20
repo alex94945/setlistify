@@ -6,7 +6,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 CLIENT_ID     = os.getenv("SPOTIFY_CLIENT_ID")
 CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 REDIRECT_URI  = os.getenv("SPOTIFY_REDIRECT_URI")
-SCOPES = "playlist-modify-public playlist-modify-private"
+SCOPES = "user-read-email playlist-modify-public playlist-modify-private"
 
 def auth_url(state: str) -> str:
     params = dict(response_type="code", client_id=CLIENT_ID,

@@ -4,9 +4,12 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .agent import build_agent_for_token, trace_provider
 from .tools.setlist_tools import search_artist
 from .tools.spotify_tools import create_playlist
+from .auth import spotify_oauth
+from fastapi.responses import RedirectResponse
 import spotipy
 import json
 import time
+import uuid
 from typing import Annotated
 
 from contextlib import asynccontextmanager
@@ -21,6 +24,8 @@ async def lifespan(app: FastAPI):
     print("Tracer provider shut down.")
 
 app = FastAPI(title="Setlistify", lifespan=lifespan)
+
+tracer = trace.get_tracer("setlistify.server")
 
 # Instrument the FastAPI app to automatically create traces for requests
 FastAPIInstrumentor.instrument_app(app)
@@ -47,26 +52,61 @@ async def agent_get_setlist(req: Request, token: str = Depends(get_spotify_token
     if not artist_name:
         raise HTTPException(400, "Missing artistName in request body")
 
-    # Add artist name to the current trace for better observability
-    span = trace.get_current_span()
-    span.set_attribute("artist.name", artist_name)
+    with tracer.start_as_current_span("setlistify-agent-run") as span:
+        # Add artist name and other metadata to the trace for better observability
+        span.set_attribute("artist.name", artist_name)
+        span.set_attribute("langfuse.tags", ["agent", "setlist"])
+        # In a real app, you might get a user ID from the session
+        span.set_attribute("langfuse.user_id", "anonymous")
 
-    # Build a new agent for each request, with the user's token bound to the tool
-    agent = build_agent_for_token(token=token)
-    response = agent(f"create a playlist for {artist_name}")
-    
-    # Add the final agent output to the trace
-    span.set_attribute("llm.output", json.dumps(response))
-    return response
+        # Build a new agent for each request, with the user's token bound to the tool
+        agent = build_agent_for_token(token=token)
+        response = agent(f"create a playlist for {artist_name}")
+        
+        # Add the final agent output to the trace
+        span.set_attribute("llm.output", json.dumps(response))
+        return response
 
 @app.post("/api/external/createPlaylist")
-async def create_playlist_route(req: Request, token: str = Depends(get_spotify_token)):
+async def create_playlist_route(req: Request):
     body = await req.json()
     artist_name = body.get("artistName")
     songs = body.get("songs")
-    if not artist_name or not songs:
-        raise HTTPException(400, "Missing artistName or songs in request body")
-    result = create_playlist(token, artist_name, songs)
+    event_date = body.get("eventDate")
+    venue_name = body.get("venueName")
+
+    if not all([artist_name, songs, event_date, venue_name]):
+        raise HTTPException(400, "Missing artistName, songs, eventDate, or venueName in request body")
+
+    # The create_playlist tool now handles its own authentication via refresh token
+    result = create_playlist(
+        artist_name=artist_name, 
+        songs=songs, 
+        event_date=event_date, 
+        venue_name=venue_name
+    )
     return result
 
+# ---------- Auth Routes ----------
+@app.get("/api/auth/login/spotify", tags=["Authentication"])
+async def spotify_login():
+    """Redirects the user to Spotify to authorize the application."""
+    # Using a static state for simplicity in this context, 
+    # but a dynamic, session-based state is recommended for production.
+    state = "setlistify_auth_state"
+    return RedirectResponse(spotify_oauth.auth_url(state))
 
+@app.get("/api/auth/callback/spotify", tags=["Authentication"])
+async def spotify_callback(code: str, state: str):
+    """Handles the callback from Spotify after user authorization."""
+    # In a production app, you should validate the 'state' parameter.
+    if state != "setlistify_auth_state":
+        raise HTTPException(status_code=400, detail="State mismatch error.")
+    
+    try:
+        token_data = spotify_oauth.exchange_code(code)
+        # For this tool, we return the token directly for the user to copy.
+        # In a real app, you would establish a user session here.
+        return token_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to exchange code for token: {e}")
