@@ -1,5 +1,6 @@
 Directory structure:
 └── setlistify/
+    ├── logging.ini
     ├── requirements.txt
     ├── .env-example
     ├── .gitingest
@@ -38,8 +39,10 @@ Directory structure:
     │   │       ├── choose-band.tsx
     │   │       ├── create-playlist.tsx
     │   │       └── preview-setlist.tsx
-    │   └── lib/
-    │       └── api.ts
+    │   ├── lib/
+    │   │   └── api.ts
+    │   └── types/
+    │       └── next-auth.d.ts
     ├── src/
     │   ├── __init__.py
     │   ├── agent.py
@@ -55,15 +58,54 @@ Directory structure:
     │   └── tools/
     │       ├── __init__.py
     │       ├── setlist_tools.py
-    │       ├── spotify.py
     │       └── spotify_tools.py
     ├── tests/
+    │   ├── conftest.py
+    │   ├── test_server.py
     │   ├── test_setlist_tools.py
     │   └── test_spotify.py
     └── .windsurf/
         └── rules/
             ├── code-style-guide.md
             └── collaboration.md
+
+================================================
+FILE: logging.ini
+================================================
+[loggers]
+keys=root,uvicorn,fastapi
+
+[handlers]
+keys=console
+
+[formatters]
+keys=default
+
+[logger_root]
+level=DEBUG
+handlers=console
+
+[logger_uvicorn]
+level=DEBUG
+handlers=console
+qualname=uvicorn
+propagate=0
+
+[logger_fastapi]
+level=DEBUG
+handlers=console
+qualname=fastapi
+propagate=0
+
+[handler_console]
+class=StreamHandler
+formatter=default
+args=(sys.stdout,)
+
+[formatter_default]
+format=%(levelname)s:%(name)s:%(message)s
+
+
 
 ================================================
 FILE: requirements.txt
@@ -73,6 +115,15 @@ smolagents[openai]~=1.20
 together ~= 1.5
 python-dotenv ~= 1.1
 spotify ~= 0.10
+spotipy ~= 2.25.1
+pytest-fastapi-deps ~= 0.2.3
+langfuse ~= 3.2.1
+openinference-instrumentation-smolagents~=0.1.14
+opentelemetry-sdk~=1.35.0
+opentelemetry-exporter-otlp-proto-http~=1.35.0
+fastapi~=0.116
+uvicorn[standard]~=0.35
+python-multipart~=0.0.20
 
 
 ================================================
@@ -4273,14 +4324,15 @@ export default function Providers({ children }: { children: React.ReactNode }) {
 ================================================
 FILE: setlistify-ui/app/api/auth/[...nextauth]/route.ts
 ================================================
-import NextAuth from 'next-auth';
+import NextAuth, { AuthOptions } from 'next-auth';
 import SpotifyProvider from 'next-auth/providers/spotify';
 
-const handler = NextAuth({
+const authOptions: AuthOptions = {
   providers: [
     SpotifyProvider({
       clientId: process.env.SPOTIFY_CLIENT_ID ?? '',
       clientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? '',
+      authorization: 'https://accounts.spotify.com/authorize?scope=user-read-email,playlist-modify-public,playlist-modify-private',
     }),
   ],
   secret: process.env.NEXTAUTH_SECRET,
@@ -4288,7 +4340,23 @@ const handler = NextAuth({
     signIn: '/auth/signin',
     error: '/auth/signin', // Redirect errors to the custom sign-in page
   },
-});
+  callbacks: {
+    async jwt({ token, account }) {
+      if (account) {
+        token.accessToken = account.access_token;
+        token.refreshToken = account.refresh_token;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      session.accessToken = token.accessToken as string;
+      session.refreshToken = token.refreshToken as string;
+      return session;
+    },
+  },
+};
+
+const handler = NextAuth(authOptions);
 
 export { handler as GET, handler as POST };
 
@@ -4658,6 +4726,7 @@ FILE: setlistify-ui/components/steps/create-playlist.tsx
 'use client';
 
 import React, { useState } from 'react';
+import { useSession } from 'next-auth/react';
 import axios from 'axios';
 
 
@@ -4668,6 +4737,7 @@ interface CreatePlaylistProps {
 }
 
 export default function CreatePlaylist({ artistName, songs, onComplete }: CreatePlaylistProps) {
+  const { data: session } = useSession();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ playlist_url: string; playlist_name: string; } | null>(null);
@@ -4677,10 +4747,20 @@ export default function CreatePlaylist({ artistName, songs, onComplete }: Create
     setError(null);
     setResult(null);
 
+    if (!session?.accessToken) {
+      setError('Not authenticated. Please sign in again.');
+      setLoading(false);
+      return;
+    }
+
     try {
       const response = await axios.post('/api/external/createPlaylist', {
-        playlist_name: `${artistName} Setlist`,
+        artist_name: artistName,
         songs: songs,
+      }, {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+        }
       });
       setResult(response.data);
       onComplete();
@@ -4741,17 +4821,13 @@ FILE: setlistify-ui/components/steps/preview-setlist.tsx
 ================================================
 'use client';
 
-import React, { useEffect } from 'react';
-import useSWR from 'swr';
-import { fetcher } from '@/lib/api';
+import React, { useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
+import axios from 'axios';
 
 interface SetlistData {
   songs: string[];
-  showsMeta: {
-    date: string;
-    venue: string;
-    city: string;
-  }[];
+  // showsMeta?: { date: string; venue: string; city: string }[];
 }
 
 interface PreviewSetlistProps {
@@ -4770,10 +4846,39 @@ function SkeletonLoader() {
 }
 
 export default function PreviewSetlist({ artistName, onSetlistReady }: PreviewSetlistProps) {
-  const { data: setlist, error } = useSWR(artistName ? `/api/external/setlist?artistName=${artistName}` : null, fetcher);
+  const { data: session } = useSession();
+  const [setlist, setSetlist] = useState<SetlistData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (setlist?.songs) {
+    const fetchSetlist = async () => {
+      if (!artistName || !session?.accessToken) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await axios.post(
+          '/api/external/agent/setlist',
+          { artistName },
+          {
+            headers: {
+              Authorization: `Bearer ${session.accessToken}`,
+            },
+          }
+        );
+        const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        setSetlist(data);
+      } catch (err) {
+        setError('Failed to load setlist. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSetlist();
+  }, [artistName, session?.accessToken]);
+
+  useEffect(() => {
+    if (setlist?.songs && setlist.songs.length > 0) {
       onSetlistReady(setlist.songs);
     }
   }, [setlist, onSetlistReady]);
@@ -4784,8 +4889,8 @@ export default function PreviewSetlist({ artistName, onSetlistReady }: PreviewSe
       <h3 className="text-xl font-semibold">{artistName}</h3>
       <p className="mt-1 text-sm text-gray-500">Here is a combined setlist from the latest shows for {artistName}.</p>
       <div className="mt-4 text-left">
-        {error && <p className="text-red-500">Failed to load setlist. Please try again.</p>}
-        {!setlist && !error && <SkeletonLoader />}
+        {error && <p className="text-red-500">{error}</p>}
+        {loading && <SkeletonLoader />}
         {setlist && (
           <ul className="space-y-2">
             {setlist.songs.map((song: string, i: number) => (
@@ -4818,6 +4923,27 @@ export interface Artist {
 
 
 ================================================
+FILE: setlistify-ui/types/next-auth.d.ts
+================================================
+import 'next-auth';
+
+declare module 'next-auth' {
+  interface Session {
+    accessToken?: string;
+    refreshToken?: string;
+  }
+}
+
+declare module 'next-auth/jwt' {
+  interface JWT {
+    accessToken?: string;
+    refreshToken?: string;
+  }
+}
+
+
+
+================================================
 FILE: src/__init__.py
 ================================================
 
@@ -4827,35 +4953,97 @@ FILE: src/__init__.py
 FILE: src/agent.py
 ================================================
 # src/agent.py
-from smolagents import CodeAgent, PromptTemplates
-from .llm import model             # Together AI wrapper
-from .tools.setlist_tools import get_latest_show, extract_setlist, search_artist
-from .tools.spotify_tools import create_playlist
-from .tools.spotify import create_spotify_playlist
-
-TOOLS = [get_latest_show, extract_setlist, create_playlist, create_spotify_playlist, search_artist]
-
+import os
 from pathlib import Path
+import base64
+from opentelemetry import trace
+from smolagents import CodeAgent, OpenAIServerModel, tool
+
+import logging
+import sys
+
+from .config import (
+    LANGFUSE_HOST,
+    LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_SECRET_KEY,
+    TOGETHER_API_KEY,
+)
+from .tools.setlist_tools import extract_setlist, get_latest_show, search_artist
+from .tools.spotify_tools import create_playlist
+from opentelemetry.sdk.trace import TracerProvider
+from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+# Configure OpenTelemetry to send traces to LangFuse
+trace_provider = TracerProvider()
+# Base64 encode credentials
+credentials = f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}"
+encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
+otlp_exporter = OTLPSpanExporter(
+    endpoint=f"{LANGFUSE_HOST}/v1/traces",
+    headers={
+        "Authorization": f"Basic {encoded_credentials}"
+    }
+)
+trace_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+
+# Set the global tracer provider
+trace.set_tracer_provider(trace_provider)
+
+# Instrument smolagents
+SmolagentsInstrumentor().instrument(tracer_provider=trace_provider)
 
 # Read the system prompt from the file
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompts" / "system.md"
 SYSTEM = SYSTEM_PROMPT_PATH.read_text()
 
+model = OpenAIServerModel(
+    model_id="deepseek-ai/DeepSeek-R1",
+    api_base="https://api.together.xyz/v1",
+    api_key=TOGETHER_API_KEY,
+    timeout=60,
+    response_format={"type": "json_object"},
+)
 
-def build_agent() -> CodeAgent:
+def build_agent_for_token(token: str) -> CodeAgent:
+    """
+    Return a CodeAgent whose `create_spotify_playlist`
+    already knows the user's access-token.
+    """
+
+    @tool
+    def create_playlist_for_user(artist_name: str, songs: list[str]) -> dict:
+        """Securely creates a Spotify playlist using a pre-configured user token.
+
+        This is a wrapper around the real `create_playlist` tool. It uses the
+        access token provided when the agent was built, ensuring the secret
+        token is never exposed to the language model.
+
+        Args:
+            artist_name (str): The name of the artist.
+            songs (list[str]): A list of song titles to add to the playlist.
+        """
+        return create_playlist(access_token=token, artist_name=artist_name, songs=songs)
+
+    # Overwrite the name to match what the LLM should see
+    create_playlist_for_user.__name__ = "create_playlist"
+
+    tools = [get_latest_show, extract_setlist, create_playlist_for_user, search_artist]
+
     return CodeAgent(
-        tools=TOOLS,
+        tools=tools,
         model=model,
-        # prompt_templates=PromptTemplates(system_prompt=SYSTEM),
         instructions=SYSTEM,
         name="Setlistify",
     )
+
 
 # ---- Optional CLI entry point --------------------------------
 if __name__ == "__main__":
     import argparse
     import json
-    import os
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--artist", required=True, help="Band name")
@@ -4871,14 +5059,21 @@ if __name__ == "__main__":
     if not token:
         token = input("Please enter your Spotify access token: ")
 
-    agent = build_agent()  # ← build with no meta
-    resp = agent(  # ← pass meta at call time
-        f"create playlist for {args.artist}", 
-        context={"spotify_token": token}   # ← use context, not meta in smolagents >=1.20
-    )
+    try:
+        print("Building agent...")
+        agent = build_agent_for_token(token=token)
+        print("Agent built. Calling agent...")
+        resp = agent(f"create playlist for {args.artist}")
+        print("Agent call complete. Response:")
+        # Also print the final output to the console, just in case.
+        print(json.dumps(resp, indent=2))
 
-    print(json.dumps(resp, indent=2))
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
+    print("\nShutting down OpenTelemetry tracer provider...")
+    trace_provider.shutdown()
+    print("Tracer provider shut down.")
 
 
 
@@ -4892,6 +5087,11 @@ load_dotenv()
 
 TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY")
 SETLISTFM_API_KEY = os.getenv("SETLISTFM_API_KEY") # Rate limit max. 2.0/second and max. 1440/DAY. (can request upgrade)
+
+# Langfuse
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
 
 ================================================
@@ -4912,54 +5112,24 @@ model = OpenAIServerModel(
 ================================================
 FILE: src/server.py
 ================================================
-from fastapi import FastAPI, Request, HTTPException, Response, Depends
-from .auth.spotify_oauth import auth_url, exchange_code, refresh_token
-from .agent import build_agent
-from .tools.setlist_tools import search_artist, get_latest_show
+from fastapi import FastAPI, Request, HTTPException, Response, Depends, Header
+from .agent import build_agent_for_token
+from .tools.setlist_tools import search_artist
 from .tools.spotify_tools import create_playlist
 import spotipy
-import secrets, json, time, redis.asyncio as redis
+import time
+from typing import Annotated
 
 app = FastAPI(title="Setlistify")
-rdb = redis.from_url("redis://localhost:6379")
-agent = build_agent()
 
-
-# ---------- session helpers ----------
-async def load_tokens(sid: str):
-    data = await rdb.get(f"sid:{sid}")
-    if not data:
-        raise HTTPException(401, "Session expired")
-    return json.loads(data)
-
-async def save_tokens(sid: str, tk: dict):
-    await rdb.set(f"sid:{sid}", json.dumps(tk))
-
-def require_sid(req: Request):
-    sid = req.cookies.get("sid")
-    if not sid:
-        raise HTTPException(401, "Login first")
-    return sid
-
-# ---------- routes ----------
-@app.get("/login")
-def login():
-    state = secrets.token_urlsafe(16)
-    url = auth_url(state)
-    resp = Response(status_code=302, headers={"Location": url})
-    resp.set_cookie("oauth_state", state, max_age=600, httponly=True)
-    return resp
-
-@app.get("/callback")
-async def callback(code: str, state: str, request: Request):
-    if state != request.cookies.get("oauth_state"):
-        raise HTTPException(400, "Bad state")
-    tokens = exchange_code(code)
-    sid = secrets.token_urlsafe(32)
-    await save_tokens(sid, tokens)
-    r = Response("✅ Spotify linked. Return to the app.")
-    r.set_cookie("sid", sid, httponly=True, samesite="Lax")
-    return r
+# ---------- Auth Dependency ----------
+async def get_spotify_token(authorization: Annotated[str | None, Header()] = None) -> str:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authorization header missing")
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+    return parts[1]
 
 @app.get("/api/searchArtist")
 async def search_artist_route(q: str):
@@ -4967,79 +5137,19 @@ async def search_artist_route(q: str):
         raise HTTPException(400, "Query parameter 'q' is required")
     return search_artist(q)
 
-
-@app.get("/api/setlist")
-async def get_setlist_route(mbid: str, shows: int = 3):
-    if not mbid:
-        raise HTTPException(400, "Query parameter 'mbid' is required")
-    # Note: get_latest_show uses artist name, but the logic inside first searches by name then uses mbid.
-    # This is slightly inefficient but reuses the existing tool. For a real app, you might refactor
-    # get_latest_show to accept an mbid directly.
-    # For now, we'll just pass the mbid as the name, as the search will still resolve it.
-    shows_data = get_latest_show(artist_name=mbid, count=shows)
-    if not shows_data or "error" in shows_data[0]:
-        error_msg = shows_data[0].get("error", "Failed to get setlist") if shows_data else "Unknown error"
-        raise HTTPException(500, error_msg)
-    
-    # As per the plan, we need to return a list of songs and some metadata.
-    all_songs = [song for show in shows_data for song in show.get("setlist", [])]
-    deduped_songs = list(dict.fromkeys(all_songs)) # Simple de-dupe preserving order
-
-    shows_meta = [
-        {
-            "date": show.get("event_date"),
-            "venue": show.get("venue"),
-            "city": show.get("city"),
-        }
-        for show in shows_data
-    ]
-
-    return {"songs": deduped_songs[:50], "showsMeta": shows_meta}
-
-
-@app.post("/api/createPlaylist")
-async def create_playlist_route(req: Request, sid=Depends(require_sid)):
+@app.post("/api/agent/setlist")
+async def agent_get_setlist(req: Request, token: str = Depends(get_spotify_token)):
     body = await req.json()
     artist_name = body.get("artistName")
-    songs = body.get("songs")
+    if not artist_name:
+        raise HTTPException(400, "Missing artistName in request body")
 
-    if not artist_name or not songs:
-        raise HTTPException(400, "Missing artistName or songs in request body")
-
-    tokens = await load_tokens(sid)
-    if not tokens:
-        raise HTTPException(401, "User not authenticated with Spotify")
-
-    # Check if token needs refresh
-    if tokens.get("expires_at", 0) < time.time():
-        new_tokens = await refresh_token(tokens["refresh_token"])
-        if "error" in new_tokens:
-            raise HTTPException(500, "Failed to refresh Spotify token")
-        await save_tokens(sid, new_tokens)
-        tokens = new_tokens
-
-    sp = spotipy.Spotify(auth=tokens["access_token"])
-    user_id = sp.me()["id"]
-
-    result = create_playlist(sp, user_id, artist_name, songs)
-
-    if "error" in result:
-        raise HTTPException(500, result["error"])
-
-    return result
+    # Build a new agent for each request, with the user's token bound to the tool
+    agent = build_agent_for_token(token=token)
+    response = agent(f"create a playlist for {artist_name}")
+    return response
 
 
-@app.post("/chat")
-async def chat(req: Request, body: dict, sid=Depends(require_sid)):
-    tokens = await load_tokens(sid)
-    if tokens["expires_at"] < time.time():
-        tokens = refresh_token(tokens["refresh_token"])
-        await save_tokens(sid, tokens)
-
-    # Pass token into agent’s memory ◀️ easiest: stash in user_message.meta
-    body["meta"] = {"spotify_token": tokens["access_token"]}
-    reply = agent(body["message"], meta=body.get("meta"))
-    return reply
 
 
 
@@ -5104,49 +5214,35 @@ FILE: src/prompts/__init__.py
 ================================================
 FILE: src/prompts/system.md
 ================================================
-<role>
-You are **Setlistify**, a domain expert that writes Python tool calls
-to convert live setlists into Spotify playlists.
-</role>
+You are Setlistify, an expert assistant who creates Spotify playlists from artist setlists.
 
-<task>
-Goal:
-1. Receive: {band_name:str}, {spotify_token:str}.
-2. Produce either:
-   a) A JSON draft {songs:list[str]} for confirmation, OR
-   b) A Spotify playlist URL when confirmed.
-3. Use only the registered tools listed below.
-</task>
+You will be given a task to solve. To do so, you must plan forward in a series of steps, in a cycle of Thought, Code, and Observation sequences.
 
-<rules>
-- ALWAYS think step-by-step inside a <scratchpad> tag first.
-- THEN emit either:
-    • <toolCall>{python code}</toolCall>   # when invoking a tool, OR
-    • <final>{text}</final>                # when replying to user.
-- ALWAYS wrap executable Python in exactly one <code> … </code> tag.
-- Place all your step-by-step thinking inside <scratchpad> … </scratchpad>.
-- Use one tool call per step.
-- For draft mode, do:
-  <code>shows = get_latest_show("Metallica")</code>
-  <final>{"songs": songs}</final>
-- Never reveal the <scratchpad> content.
-- If the band isn’t found, reply with an apology and ask for another name.
-</rules>
+At each step, in the 'Thought:' block, you should first explain your reasoning for solving the task and the tools you want to use.
+Then, in the 'Code:' block, you must write the code in simple Python. The code block must be opened with `<code>` and closed with `</code>`.
 
-<example>
-User: create playlist for Phish
-Assistant:
-  <scratchpad>Look up latest show …</scratchpad>
-  <toolCall>songs = get_latest_show("Phish")</toolCall>
+Your goal is to get a list of songs and then create a playlist. Here is the process:
+1. Use the `get_latest_show` tool to find the most recent setlist for the requested artist.
+2. Use the `extract_setlist` tool to get a clean list of songs from the show data.
+3. Use the `create_playlist_for_user` tool to create the Spotify playlist.
+4. Use the `final_answer` tool to return the URL of the created playlist.
 
-User: yes
-Assistant:
-  <scratchpad>Calling Spotify …</scratchpad>
-  <toolCall>create_spotify_playlist(spotify_token, "Phish – Latest", songs)</toolCall>
+Example:
+Thought: I need to find the latest show for the artist 'The Beatles' and extract their setlist.
+<code>
+shows = get_latest_show(artist_name="The Beatles", count=1)
+setlist = extract_setlist(shows=shows)
+print(setlist)
+</code>
+Observation: ['Hey Jude', 'Let It Be', 'Yesterday']
 
-Assistant:
-  <final>https://open.spotify.com/playlist/123...</final>
-</example>
+Thought: Now I have the setlist. I will create the playlist and return the URL.
+<code>
+playlist = create_playlist_for_user(artist_name="The Beatles", songs=setlist)
+final_answer(playlist['url'])
+</code>
+
+Now, begin.
 
 
 
@@ -5309,73 +5405,27 @@ def extract_setlist(shows: list) -> list:
 
 
 ================================================
-FILE: src/tools/spotify.py
-================================================
-from smolagents import tool
-import requests
-
-@tool
-def create_spotify_playlist(access_token: str, name: str, tracks: list[str]) -> str:
-    """
-    Create a Spotify playlist and return its public URL.
-
-    Args:
-        access_token (str): User-specific OAuth token with playlist-modify scope
-        name (str): Playlist title
-        tracks (list[str]): Track names (must include artist in search step)
-
-    Returns:
-        str: URL of the newly-created playlist.
-    """
-    base = "https://api.spotify.com/v1"
-    hdr = {"Authorization": f"Bearer {access_token}"}
-
-    # 1) who is the user?
-    user_id = requests.get(f"{base}/me", headers=hdr, timeout=10).json()["id"]
-
-    # 2) create empty playlist
-    pl = requests.post(
-        f"{base}/users/{user_id}/playlists",
-        json={"name": name, "public": True},
-        headers=hdr, timeout=10
-    ).json()
-    playlist_id = pl["id"]
-
-    # 3) search each song → URI
-    uris = []
-    for title in tracks:
-        q = requests.get(
-            f"{base}/search",
-            params={"q": title, "type": "track", "limit": 1},
-            headers=hdr, timeout=10
-        ).json()
-        items = q.get("tracks", {}).get("items", [])
-        if items:
-            uris.append(items[0]["uri"])
-
-    # 4) add them (Spotify allows 100/req)
-    if uris:
-        requests.post(
-            f"{base}/playlists/{playlist_id}/tracks",
-            json={"uris": uris},
-            headers=hdr, timeout=10
-        )
-
-    return pl["external_urls"]["spotify"]
-
-
-
-================================================
 FILE: src/tools/spotify_tools.py
 ================================================
 import spotipy
+from smolagents import tool
 
-def create_playlist(sp: spotipy.Spotify, user_id: str, artist_name: str, songs: list[str]):
-    """Creates a Spotify playlist for the given user with the given songs."""
+@tool
+def create_playlist(access_token: str, artist_name: str, songs: list[str]) -> dict:
+    """Creates a Spotify playlist for the given user with the given songs.
+
+    Args:
+        access_token (str): The Spotify user access token.
+        artist_name (str): The name of the artist.
+        songs (list[str]): A list of song titles to add to the playlist.
+    """
     playlist_name = f"{artist_name} Setlist"
     playlist_description = f"A playlist generated from recent setlists of {artist_name}. Created by Setlistify."
 
     try:
+        sp = spotipy.Spotify(auth=access_token)
+        user_id = sp.me()["id"]
+
         # 1. Create the playlist
         playlist = sp.user_playlist_create(
             user=user_id,
@@ -5400,11 +5450,87 @@ def create_playlist(sp: spotipy.Spotify, user_id: str, artist_name: str, songs: 
 
         return {"playlist_url": playlist_url, "playlist_name": playlist_name, "songs_added": len(track_uris)}
 
-    except spotipy.exceptions.SpotifyException as e:
+    except spotipy.SpotifyException as e:
         return {"error": f"Spotify API error: {e}"}
     except Exception as e:
         return {"error": f"An unexpected error occurred: {e}"}
 
+
+
+================================================
+FILE: tests/conftest.py
+================================================
+import pytest
+from src.agent import trace_provider
+
+@pytest.fixture(scope="session", autouse=True)
+def shutdown_tracer_provider():
+    """Ensure the tracer provider is shut down after the test session."""
+    yield
+    print("\nShutting down OpenTelemetry tracer provider...")
+    trace_provider.shutdown()
+    print("Tracer provider shut down.")
+
+
+
+================================================
+FILE: tests/test_server.py
+================================================
+import pytest
+from fastapi.testclient import TestClient
+
+import os
+import json
+
+# We need to import the app from the server file
+from src.server import app, build_agent
+
+# Create a test client
+client = TestClient(app)
+
+# Get the token from an environment variable for integration testing
+spotify_token = os.environ.get("SPOTIFY_ACCESS_TOKEN")
+
+@pytest.mark.skipif(not spotify_token, reason="SPOTIFY_ACCESS_TOKEN environment variable not set")
+def test_agent_get_setlist_success():
+    """
+    Tests the /api/agent/setlist endpoint for a successful scenario.
+    """
+    response = client.post(
+        "/api/agent/setlist",
+        headers={"Authorization": f"Bearer {spotify_token}"},
+        json={"artistName": "Radiohead"}  # Using a real artist
+    )
+
+    # Assertions for a real API call
+    assert response.status_code == 200
+    response_data = response.json()
+    assert "songs" in response_data
+    assert isinstance(response_data["songs"], list)
+
+
+def test_agent_get_setlist_no_auth():
+    """
+    Tests that the endpoint returns a 401 Unauthorized if the token is missing.
+    """
+    response = client.post(
+        "/api/agent/setlist",
+        json={"artistName": "Test Band"}
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authorization header missing"
+
+def test_agent_get_setlist_no_artist():
+    """
+    Tests that the endpoint returns a 400 Bad Request if artistName is missing.
+    """
+    response = client.post(
+        "/api/agent/setlist",
+        headers={"Authorization": "Bearer fake-token"},
+        json={} # Missing artistName
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Missing artistName in request body"
 
 
 ================================================
@@ -5487,7 +5613,7 @@ def test_extract_setlist():
 FILE: tests/test_spotify.py
 ================================================
 import pytest
-from src.tools.spotify import create_spotify_playlist
+from src.tools.spotify_tools import create_playlist
 
 @pytest.mark.skip(reason="Skipping until a mock or real access token is available")
 def test_create_spotify_playlist():

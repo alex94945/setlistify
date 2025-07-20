@@ -5,7 +5,7 @@ import os
 import json
 
 # We need to import the app from the server file
-from src.server import app, build_agent
+from src.server import app
 
 # Create a test client
 client = TestClient(app)

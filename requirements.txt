@@ -7,6 +7,7 @@ spotipy ~= 2.25.1
 pytest-fastapi-deps ~= 0.2.3
 langfuse ~= 3.2.1
 openinference-instrumentation-smolagents~=0.1.14
+opentelemetry-instrumentation-fastapi~=0.47b0
 opentelemetry-sdk~=1.35.0
 opentelemetry-exporter-otlp-proto-http~=1.35.0
 fastapi~=0.116

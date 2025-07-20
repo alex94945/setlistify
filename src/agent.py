@@ -50,7 +50,6 @@ model = OpenAIServerModel(
     api_base="https://api.together.xyz/v1",
     api_key=TOGETHER_API_KEY,
     timeout=60,
-    response_format={"type": "json_object"},
 )
 
 def build_agent_for_token(token: str) -> CodeAgent:
