@@ -1,5 +1,5 @@
 import pytest
-from src.tools.spotify import create_spotify_playlist
+from src.tools.spotify_tools import create_playlist
 
 @pytest.mark.skip(reason="Skipping until a mock or real access token is available")
 def test_create_spotify_playlist():

@@ -1,30 +1,41 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useSession } from 'next-auth/react';
 import axios from 'axios';
-import { Artist } from '@/lib/api';
+
 
 interface CreatePlaylistProps {
-  artist: Artist | null;
+  artistName: string;
   songs: string[];
   onComplete: () => void;
 }
 
-export default function CreatePlaylist({ artist, songs, onComplete }: CreatePlaylistProps) {
+export default function CreatePlaylist({ artistName, songs, onComplete }: CreatePlaylistProps) {
+  const { data: session } = useSession();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ playlist_url: string; playlist_name: string; } | null>(null);
 
   const handleCreatePlaylist = async () => {
-    if (!artist) return;
     setLoading(true);
     setError(null);
     setResult(null);
 
+    if (!session?.accessToken) {
+      setError('Not authenticated. Please sign in again.');
+      setLoading(false);
+      return;
+    }
+
     try {
-      const response = await axios.post('/api/createPlaylist', {
-        artistName: artist.name,
-        songs,
+      const response = await axios.post('/api/external/createPlaylist', {
+        artist_name: artistName,
+        songs: songs,
+      }, {
+        headers: {
+          Authorization: `Bearer ${session.accessToken}`,
+        }
       });
       setResult(response.data);
       onComplete();
@@ -58,10 +69,12 @@ export default function CreatePlaylist({ artist, songs, onComplete }: CreatePlay
     );
   }
 
+  const playlistName = `${artistName} Setlist`;
+
   return (
     <div className="w-full max-w-2xl p-8 text-center bg-white border border-gray-200 rounded-lg shadow-sm">
       <h2 className="text-lg font-medium text-gray-900">Ready to Go?</h2>
-      <p className="mt-1 text-sm text-gray-500">Confirm to create a playlist for {artist?.name} with {songs.length} songs.</p>
+      <p className="mt-1 text-sm text-gray-500">Confirm to create a playlist for {artistName} with {songs.length} songs.</p>
       <div className="mt-6">
         <button
           onClick={handleCreatePlaylist}

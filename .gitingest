@@ -1,0 +1,46 @@
+[config]
+ignore_patterns = [
+  ".env",
+
+  # editor / tooling
+  "*.cursor*",          # kills .cursor/  plus anything it contains
+  ".vscode/*",
+  ".windsurfrules",
+
+  # OS junk anywhere in the tree
+  "*/.DS_Store",
+
+  # caches / byte-code
+  "*__pycache__*",      # every __pycache__ dir and its contents
+  "*.py[co]",           # stray compiled files
+  "*.pyo",
+
+  # pytest cache
+  "*.pytest_cache*",    # matches .pytest_cache/ at any depth
+
+  # logs & build artefacts
+  "logs/*",
+  "*.log",
+  "*.egg-info*",
+  "*.dist-info*",
+
+  # Node generated stuff
+  "ui/node_modules/*",
+  "*npm-debug.log*",
+  "*yarn-debug.log*",
+  "*yarn-error.log*",
+  "ui/.next/*",
+
+  # template boilerplate
+  "templates/nextjs-base/*",
+
+  # E2E test outpu
+  "workspace_dev/*",
+
+  # keep unit tests but drop fixture payload
+  "tests/test_fixtures/*",
+  "tests/integration/fixtures/*",
+  "test_results/*",
+
+  "CLAUDE.md",
+]

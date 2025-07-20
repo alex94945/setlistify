@@ -19,24 +19,46 @@ def search_artist(artist_name: str) -> list:
     Returns:
         list: A list of artist dictionaries, each containing name, mbid, and disambiguation.
     """
+    print("--- Initiating new artist search ---")
+    print(f"Searching for artist: {artist_name}")
+    print(f"Using API Key: {SETLISTFM_API_KEY[:4]}...****")
+
     search_url = f"https://api.setlist.fm/rest/1.0/search/artists?artistName={artist_name}&p=1&sort=relevance"
-    headers = {"x-api-key": SETLISTFM_API_KEY, "Accept": "application/json"}
+    print(f"Requesting URL: {search_url}")
+    headers = {
+        "x-api-key": SETLISTFM_API_KEY,
+        "Accept": "application/json",
+    }
+    print(f"With headers: {headers}")
+
     try:
         time.sleep(0.6)  # Respect rate limits
+        print("Sending request to Setlist.fm API...")
         resp = requests.get(search_url, headers=headers)
-        resp.raise_for_status()
+        print(f"Received response with status code: {resp.status_code}")
+        resp.raise_for_status()  # This will raise an exception for 4xx or 5xx status codes
+
+        print("Request successful, parsing JSON response...")
         results = resp.json().get("artist", [])
-        return [
+        print(f"Found {len(results)} artists.")
+
+        artists = [
             {
                 "name": artist.get("name"),
                 "mbid": artist.get("mbid"),
-                "disambiguation": artist.get("disambiguation"),
+                "disambiguation": artist.get("disambiguation", ""),
             }
             for artist in results
         ]
-    except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch artist '{artist_name}': {e}")
-        return [{"error": str(e)}]
+        print("Successfully processed artists.")
+        return artists
+    except requests.exceptions.HTTPError as http_err:
+        print(f"!!! HTTP error occurred: {http_err}") 
+        print(f"Response content: {resp.text}")
+        return []
+    except Exception as err:
+        print(f"!!! Other error occurred: {err}") 
+        return []
 
 
 @tool
@@ -61,6 +83,10 @@ def get_latest_show(artist_name: str, count: int = 1) -> list:
     # Step 2: Get latest shows
     shows_url = f"https://api.setlist.fm/rest/1.0/artist/{mbid}/setlists?p=1"
     resp = None
+    headers = {
+        "x-api-key": SETLISTFM_API_KEY,
+        "Accept": "application/json",
+    }
     for attempt in range(3):
         try:
             time.sleep(0.6)  # Keep original sleep to respect rate limits
