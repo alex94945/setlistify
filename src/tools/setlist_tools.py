@@ -5,7 +5,7 @@ import requests
 import time
 
 SETLISTFM_API_KEY = os.getenv("SETLISTFM_API_KEY")
-SPOTIFY_API_KEY = os.getenv("SPOTIFY_API_KEY")
+SPOTIFY_ACCESS_TOKEN = os.getenv("SPOTIFY_ACCESS_TOKEN")
 
 
 @tool

@@ -28,7 +28,7 @@ credentials = f"{LANGFUSE_PUBLIC_KEY}:{LANGFUSE_SECRET_KEY}"
 encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
 otlp_exporter = OTLPSpanExporter(
-    endpoint=f"{LANGFUSE_HOST}/v1/traces",
+    endpoint=f"{LANGFUSE_HOST}/api/public/traces",
     headers={
         "Authorization": f"Basic {encoded_credentials}"
     }
@@ -95,12 +95,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--token",
         required=False,
-        help="Spotify user access-token. Is overridden by SPOTIFY_API_KEY env var.",
+        help="Spotify user access-token. Is overridden by SPOTIFY_ACCESS_TOKEN env var.",
     )
     args = parser.parse_args()
 
-    # Precedence: SPOTIFY_API_KEY > --token > prompt
-    token = os.getenv("SPOTIFY_API_KEY") or args.token
+    # Precedence: SPOTIFY_ACCESS_TOKEN > --token > prompt
+    token = os.getenv("SPOTIFY_ACCESS_TOKEN") or args.token
     if not token:
         token = input("Please enter your Spotify access token: ")
 
@@ -116,6 +116,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"An error occurred: {e}")
 
-    print("\nShutting down OpenTelemetry tracer provider...")
+    print("\nFlushing and shutting down OpenTelemetry tracer provider...")
+    trace_provider.force_flush()
     trace_provider.shutdown()
     print("Tracer provider shut down.")
