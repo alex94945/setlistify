@@ -51,11 +51,9 @@ model = OpenAIServerModel(
     timeout=60,
 )
 
-# The tools the agent can use.
-# We now use create_playlist directly, as it handles its own authentication.
 tools = [get_latest_show, extract_setlist, create_playlist]
 
-# Create the agent instance
+# This is the main, unauthenticated agent instance.
 agent = ToolCallingAgent(
     tools=tools,
     model=model,
@@ -63,6 +61,43 @@ agent = ToolCallingAgent(
     name="Setlistify",
     stream_outputs=True,
 )
+
+from spotipy import Spotify
+
+def build_agent_for_spotify_client(spotify_client: Spotify) -> ToolCallingAgent:
+    """
+    Return a ToolCallingAgent whose `create_playlist` tool is already
+    authenticated with a Spotify client.
+    """
+
+    @tool
+    def create_playlist_for_user(artist_name: str, songs: list[str], event_date: str, venue_name: str) -> dict:
+        """
+        Creates a Spotify playlist for a given artist and set of songs.
+
+        Args:
+            artist_name: The name of the artist.
+            songs: A list of song titles to add to the playlist.
+            event_date: The date of the event (e.g., 'YYYY-MM-DD').
+            venue_name: The name of the venue where the event took place.
+        """
+        return create_playlist(
+            spotify_client=spotify_client,
+            artist_name=artist_name,
+            songs=songs,
+            event_date=event_date,
+            venue_name=venue_name,
+        )
+
+    authed_tools = [get_latest_show, extract_setlist, create_playlist_for_user]
+
+    return ToolCallingAgent(
+        tools=authed_tools,
+        model=model,
+        instructions=SYSTEM,
+        name="Setlistify",
+        stream_outputs=True,
+    )
 
 # ---- Optional CLI entry point --------------------------------
 if __name__ == "__main__":

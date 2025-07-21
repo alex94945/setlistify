@@ -35,7 +35,9 @@ def test_create_real_spotify_playlist():
         "Fade to Black"
     ]
 
-    result = create_playlist(access_token, artist_name, tracks)
+    event_date = "2025-01-01"
+    venue_name = "Test Venue"
+    result = create_playlist(access_token, artist_name, tracks, event_date, venue_name)
 
     assert "error" not in result, f"API call failed with error: {result.get('error')}"
     assert "playlist_url" in result

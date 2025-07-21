@@ -2,19 +2,35 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
-First, run the development server:
+To run this project, you need both the backend and frontend servers running concurrently in separate terminal sessions.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+### 1. Start the Backend Server
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The backend server provides the core API for the application.
+
+1.  Open a terminal and navigate to the **root directory** of the project (`/setlistify`).
+2.  Activate the conda environment:
+    ```bash
+    conda activate setlistify
+    ```
+3.  Start the Uvicorn server:
+    ```bash
+    uvicorn src.server:app --reload
+    ```
+The backend will now be running at `http://127.0.0.1:8000`.
+
+### 2. Start the Frontend Server
+
+The frontend is a Next.js application.
+
+1.  Open a **new, separate terminal** and navigate to the UI directory (`/setlistify/setlistify-ui`).
+2.  Run the development server using your preferred package manager:
+    ```bash
+    npm run dev
+    ```
+    **Note:** `npm run dev`, `pnpm dev`, and `yarn dev` all execute the same command. **Do not run more than one at the same time**, as this will cause port conflicts.
+
+Open [http://http://127.0.0.1:3000/](http://http://127.0.0.1:3000/) with your browser to see the result.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

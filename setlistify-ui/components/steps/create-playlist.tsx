@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useSession } from 'next-auth/react';
+
 import axios from 'axios';
 
 
@@ -12,7 +12,7 @@ interface CreatePlaylistProps {
 }
 
 export default function CreatePlaylist({ artistName, songs, onComplete }: CreatePlaylistProps) {
-  const { data: session } = useSession();
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ playlist_url: string; playlist_name: string; } | null>(null);
@@ -22,21 +22,17 @@ export default function CreatePlaylist({ artistName, songs, onComplete }: Create
     setError(null);
     setResult(null);
 
-    if (!session?.accessToken) {
-      setError('Not authenticated. Please sign in again.');
-      setLoading(false);
-      return;
-    }
-
     try {
-      const response = await axios.post('/api/external/createPlaylist', {
-        artist_name: artistName,
-        songs: songs,
-      }, {
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
+      const response = await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/agent/create-playlist`,
+        {
+          artist_name: artistName,
+          songs: songs,
+        },
+        {
+          withCredentials: true, // Send cookies for authentication
         }
-      });
+      );
       setResult(response.data);
       onComplete();
     } catch (err: any) {

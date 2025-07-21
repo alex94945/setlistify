@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { useSession } from 'next-auth/react';
+
 import axios from 'axios';
 
 interface SetlistData {
@@ -25,36 +25,38 @@ function SkeletonLoader() {
 }
 
 export default function PreviewSetlist({ artistName, onSetlistReady }: PreviewSetlistProps) {
-  const { data: session } = useSession();
+  
   const [setlist, setSetlist] = useState<SetlistData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchSetlist = async () => {
-      if (!artistName || !session?.accessToken) return;
+      if (!artistName) return;
       setLoading(true);
       setError(null);
       try {
         const response = await axios.post(
-          '/api/external/agent/setlist',
+          `${process.env.NEXT_PUBLIC_API_URL}/api/agent/setlist`,
           { artistName },
-          {
-            headers: {
-              Authorization: `Bearer ${session.accessToken}`,
-            },
-          }
+          { withCredentials: true, timeout: 300000 } // 5 minutes
         );
         const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
         setSetlist(data);
       } catch (err) {
-        setError('Failed to load setlist. Please try again.');
+        if (axios.isAxiosError(err) && err.response?.status === 401) {
+          // Not authenticated, redirect to Spotify login
+          const authUrl = err.response.data.detail;
+          window.location.href = authUrl;
+        } else {
+          setError('Failed to load setlist. Please try again.');
+        }
       } finally {
         setLoading(false);
       }
     };
     fetchSetlist();
-  }, [artistName, session?.accessToken]);
+  }, [artistName]);
 
   useEffect(() => {
     if (setlist?.songs && setlist.songs.length > 0) {

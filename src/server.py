@@ -1,112 +1,172 @@
-from fastapi import FastAPI, Request, HTTPException, Response, Depends, Header
-from opentelemetry import trace
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from .agent import build_agent_for_token, trace_provider
-from .tools.setlist_tools import search_artist
-from .tools.spotify_tools import create_playlist
-from .auth import spotify_oauth
-from fastapi.responses import RedirectResponse
-import spotipy
 import json
-import time
-import uuid
-from typing import Annotated
-
+import secrets
+import toml
 from contextlib import asynccontextmanager
 
+from fastapi import FastAPI, Depends, Request, Response, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry import trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from pydantic import BaseModel
+from spotipy import Spotify
+from spotipy.cache_handler import CacheHandler
+from spotipy.oauth2 import SpotifyOAuth
+
+from .agent import build_agent_for_spotify_client, trace_provider
+
+# Load configuration from toml file
+config = toml.load("./config.toml")
+
+# Set up OpenTelemetry
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic can go here
     yield
-    # Shutdown logic
-    print("Shutting down OpenTelemetry tracer provider...")
+    print("\nFlushing and shutting down OpenTelemetry tracer provider...")
+    trace_provider.force_flush()
     trace_provider.shutdown()
     print("Tracer provider shut down.")
 
 app = FastAPI(title="Setlistify", lifespan=lifespan)
 
+# Configure CORS to allow requests from the frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Allow both localhost and 127.0.0.1
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
 tracer = trace.get_tracer("setlistify.server")
+FastAPIInstrumentor.instrument_app(app, tracer_provider=trace_provider)
 
-# Instrument the FastAPI app to automatically create traces for requests
-FastAPIInstrumentor.instrument_app(app)
+# --- Spotify OAuth2 and Session Management ---
 
-# ---------- Auth Dependency ----------
-async def get_spotify_token(authorization: Annotated[str | None, Header()] = None) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header missing")
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Invalid authorization scheme")
-    return parts[1]
+# A simple dictionary to act as a server-side session store.
+# In a production app, you would use a more robust solution like Redis.
+sessions = dict()
 
-@app.get("/api/searchArtist")
-async def search_artist_route(q: str):
-    if not q:
-        raise HTTPException(400, "Query parameter 'q' is required")
-    return search_artist(q)
+class FastAPICacheHandler(CacheHandler):
+    """
+    A cache handler that stores tokens in our server-side session dictionary
+    and applies a session cookie to the response.
+    """
+    def __init__(self, request: Request, response: Response = None):
+        self.request = request
+        self.response = response
 
-@app.post("/api/agent/setlist")
-async def agent_get_setlist(req: Request, token: str = Depends(get_spotify_token)):
-    body = await req.json()
-    artist_name = body.get("artistName")
-    if not artist_name:
-        raise HTTPException(400, "Missing artistName in request body")
+    def get_cached_token(self):
+        return sessions.get(self.request.cookies.get("session"))
 
-    with tracer.start_as_current_span("setlistify-agent-run") as span:
-        # Add artist name and other metadata to the trace for better observability
-        span.set_attribute("artist.name", artist_name)
-        span.set_attribute("langfuse.tags", ["agent", "setlist"])
-        # In a real app, you might get a user ID from the session
-        span.set_attribute("langfuse.user_id", "anonymous")
+    def save_token_to_cache(self, token_info):
+        session_id = secrets.token_urlsafe(64)
+        sessions[session_id] = token_info
+        # The SessionMiddleware is not working reliably across ports.
+        # We will set the cookie manually to ensure it has the correct domain.
+        # self.request.session["token_info"] = token_info
 
-        # Build a new agent for each request, with the user's token bound to the tool
-        agent = build_agent_for_token(token=token)
-        response = agent(f"create a playlist for {artist_name}")
-        
-        # Add the final agent output to the trace
-        span.set_attribute("llm.output", json.dumps(response))
-        return response
+        # Manually set the cookie on the response object passed to the handler
+        if self.response:
+            self.response.set_cookie(
+                key="session", 
+                value=session_id, 
+                domain="127.0.0.1",
+                httponly=True,
+                samesite='lax' # Use 'lax' for cross-origin redirects
+            )
 
-@app.post("/api/external/createPlaylist")
-async def create_playlist_route(req: Request):
-    body = await req.json()
-    artist_name = body.get("artistName")
-    songs = body.get("songs")
-    event_date = body.get("eventDate")
-    venue_name = body.get("venueName")
+def get_spotify_client(cache_handler=Depends(FastAPICacheHandler)) -> Spotify:
+    """
+    FastAPI dependency to get a Spotipy client. It handles the auth flow.
 
-    if not all([artist_name, songs, event_date, venue_name]):
-        raise HTTPException(400, "Missing artistName, songs, eventDate, or venueName in request body")
+    If the user is not authenticated, it raises a 401 HTTPException with the
+    Spotify authorization URL. The frontend should handle this by redirecting
+    the user to this URL.
+    """
+    auth_manager = SpotifyOAuth(**config["spotipy"], cache_handler=cache_handler)
+    if not auth_manager.validate_token(cache_handler.get_cached_token()):
+        auth_url = auth_manager.get_authorize_url()
+        raise HTTPException(status_code=401, detail=auth_url)
+    return Spotify(auth_manager=auth_manager)
 
-    # The create_playlist tool now handles its own authentication via refresh token
-    result = create_playlist(
-        artist_name=artist_name, 
-        songs=songs, 
-        event_date=event_date, 
-        venue_name=venue_name
-    )
-    return result
+@app.get("/auth")
+def spotify_auth(cache_handler=Depends(FastAPICacheHandler)):
+    """
+    Initiate Spotify OAuth flow by redirecting to Spotify's authorization URL.
+    """
+    auth_manager = SpotifyOAuth(**config["spotipy"], cache_handler=cache_handler)
+    auth_url = auth_manager.get_authorize_url()
+    return RedirectResponse(url=auth_url)
 
-# ---------- Auth Routes ----------
-@app.get("/api/auth/login/spotify", tags=["Authentication"])
-async def spotify_login():
-    """Redirects the user to Spotify to authorize the application."""
-    # Using a static state for simplicity in this context, 
-    # but a dynamic, session-based state is recommended for production.
-    state = "setlistify_auth_state"
-    return RedirectResponse(spotify_oauth.auth_url(state))
-
-@app.get("/api/auth/callback/spotify", tags=["Authentication"])
-async def spotify_callback(code: str, state: str):
-    """Handles the callback from Spotify after user authorization."""
-    # In a production app, you should validate the 'state' parameter.
-    if state != "setlistify_auth_state":
-        raise HTTPException(status_code=400, detail="State mismatch error.")
+@app.get("/auth/status")
+def auth_status(cache_handler=Depends(FastAPICacheHandler)):
+    """
+    Check if user is authenticated and return profile info if logged in.
+    """
+    auth_manager = SpotifyOAuth(**config["spotipy"], cache_handler=cache_handler)
+    token_info = cache_handler.get_cached_token()
+    
+    if not auth_manager.validate_token(token_info):
+        return {"authenticated": False}
     
     try:
-        token_data = spotify_oauth.exchange_code(code)
-        # For this tool, we return the token directly for the user to copy.
-        # In a real app, you would establish a user session here.
-        return token_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to exchange code for token: {e}")
+        spotify = Spotify(auth_manager=auth_manager)
+        user_info = spotify.current_user()
+        return {
+            "authenticated": True,
+            "user": {
+                "name": user_info.get("display_name", "Spotify User"),
+                "image": user_info.get("images", [{}])[0].get("url") if user_info.get("images") else None,
+                "id": user_info.get("id")
+            }
+        }
+    except Exception:
+        return {"authenticated": False}
+
+@app.get("/callback")
+def spotify_callback(code: str, response: Response, cache_handler=Depends(FastAPICacheHandler)):
+    """
+    Callback endpoint for Spotify to redirect to after user authorization.
+    """
+    # The cache handler needs access to the response object to set the session cookie
+    cache_handler.response = response
+
+    # The auth_manager will get the token and use the cache handler to save it
+    auth_manager = SpotifyOAuth(**config["spotipy"], cache_handler=cache_handler)
+    auth_manager.get_access_token(code, as_dict=False)
+
+    # The cookie is now set on the response object. Now, configure the redirect.
+    response.status_code = 307  # Temporary Redirect
+    response.headers["Location"] = "http://127.0.0.1:3000/"
+    return response
+
+@app.get("/logout")
+def logout(request: Request):
+    """Clear the server-side session."""
+    session_id = request.cookies.get("session")
+    if session_id in sessions:
+        del sessions[session_id]
+    return {"detail": "Logged out successfully."}
+
+
+# --- API Routes ---
+
+class SetlistRequest(BaseModel):
+    artistName: str
+
+@app.post("/api/agent/setlist")
+async def agent_setlist(request: SetlistRequest, spotify_client: Spotify = Depends(get_spotify_client)):
+    artist_name = request.artistName
+
+    with tracer.start_as_current_span("setlistify-agent-run") as span:
+        span.set_attribute("artist.name", artist_name)
+        span.set_attribute("langfuse.tags", ["agent", "setlist"])
+        # Using spotify user id for tracking
+        user_id = spotify_client.me()["id"]
+        span.set_attribute("langfuse.user_id", user_id)
+
+        agent = build_agent_for_spotify_client(spotify_client=spotify_client)
+        response = agent(f"create a playlist for {artist_name}")
+        
+        span.set_attribute("llm.output", json.dumps(response))
+        return response
