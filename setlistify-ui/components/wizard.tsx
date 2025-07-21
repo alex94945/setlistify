@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import ProgressStepper from './progress-stepper';
 import ChooseBand from './steps/choose-band';
 import PreviewSetlist from './steps/preview-setlist';
@@ -15,13 +15,15 @@ export default function Wizard() {
 
   
 
-  const handleSetlistReady = (songList: string[]) => {
+  const handleSetlistReady = useCallback((songList: string[]) => {
     setSongs(songList);
-  };
+    // Automatically advance to the next step (Create Playlist)
+    setStep(2);
+  }, []);
 
-  const handleComplete = () => {
+  const handleComplete = useCallback(() => {
     setIsComplete(true);
-  };
+  }, []);
 
   const next = () => setStep((s) => Math.min(s + 1, 2)); // 3 steps total, so max index is 2
   const prev = () => setStep((s) => Math.max(s - 1, 0));

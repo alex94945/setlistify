@@ -27,10 +27,14 @@ export default function SpotifyLoginButton() {
     try {
       const response = await axios.get(
         `${process.env.NEXT_PUBLIC_API_URL}/auth/status`,
-        { withCredentials: true }
+        { 
+          withCredentials: true,
+          timeout: 3000 // 3 second timeout
+        }
       );
       setAuthStatus(response.data);
-    } catch (error) {
+    } catch (error: any) {
+      console.log('Auth status check failed (backend may be down):', error?.message || 'Unknown error');
       setAuthStatus({ authenticated: false });
     } finally {
       setLoading(false);

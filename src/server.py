@@ -4,6 +4,7 @@ import toml
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, Request, Response, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry import trace
@@ -154,19 +155,55 @@ def logout(request: Request):
 class SetlistRequest(BaseModel):
     artistName: str
 
-@app.post("/api/agent/setlist")
-async def agent_setlist(request: SetlistRequest, spotify_client: Spotify = Depends(get_spotify_client)):
-    artist_name = request.artistName
-
-    with tracer.start_as_current_span("setlistify-agent-run") as span:
-        span.set_attribute("artist.name", artist_name)
-        span.set_attribute("langfuse.tags", ["agent", "setlist"])
-        # Using spotify user id for tracking
-        user_id = spotify_client.me()["id"]
-        span.set_attribute("langfuse.user_id", user_id)
-
-        agent = build_agent_for_spotify_client(spotify_client=spotify_client)
-        response = agent(f"create a playlist for {artist_name}")
+@app.get("/api/agent/setlist")
+def get_setlist_stream(artistName: str, spotify_client=Depends(get_spotify_client)):
+    """Stream agent progress updates while generating setlist"""
+    artist_name = artistName
+    
+    def generate_progress():
+        import time
+        import json
         
-        span.set_attribute("llm.output", json.dumps(response))
-        return response
+        try:
+            # Send initial progress
+            yield f"data: {json.dumps({'type': 'progress', 'message': f'🎵 Searching for {artist_name} setlists...', 'step': 1, 'total': 5})}\n\n"
+            time.sleep(1)
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': '🔍 Analyzing recent concerts and tours...', 'step': 2, 'total': 5})}\n\n"
+            time.sleep(2)
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': '🎸 Compiling the ultimate setlist...', 'step': 3, 'total': 5})}\n\n"
+            time.sleep(1)
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': '🎧 Matching songs to Spotify tracks...', 'step': 4, 'total': 5})}\n\n"
+            
+            # Actually run the agent
+            with tracer.start_as_current_span("agent.setlist") as span:
+                span.set_attribute("langfuse.tags", ["agent", "setlist"])
+                user_id = spotify_client.me()["id"]
+                span.set_attribute("langfuse.user_id", user_id)
+                
+                agent = build_agent_for_spotify_client(spotify_client=spotify_client)
+                response = agent(f"create a playlist for {artist_name}")
+                
+                span.set_attribute("llm.output", json.dumps(response))
+            
+            yield f"data: {json.dumps({'type': 'progress', 'message': '✨ Finalizing your playlist...', 'step': 5, 'total': 5})}\n\n"
+            time.sleep(1)
+            
+            # Send final result
+            yield f"data: {json.dumps({'type': 'complete', 'data': response})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true"
+        }
+    )
