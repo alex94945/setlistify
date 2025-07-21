@@ -9,9 +9,10 @@ interface CreatePlaylistProps {
   artistName: string;
   songs: string[];
   onComplete: () => void;
+  onReset?: () => void;
 }
 
-export default function CreatePlaylist({ artistName, songs, onComplete }: CreatePlaylistProps) {
+export default function CreatePlaylist({ artistName, songs, onComplete, onReset }: CreatePlaylistProps) {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +56,7 @@ export default function CreatePlaylist({ artistName, songs, onComplete }: Create
         </p>
         <div className="mt-6">
           <button
-            onClick={() => window.location.reload()} // Simple way to reset state
+            onClick={onReset}
             className="px-4 py-2 text-sm font-medium text-white bg-purple-accent rounded-md hover:bg-purple-700"
           >
             Create Another

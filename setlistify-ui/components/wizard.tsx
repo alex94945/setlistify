@@ -25,13 +25,20 @@ export default function Wizard() {
     setIsComplete(true);
   }, []);
 
+  const handleReset = useCallback(() => {
+    setStep(0);
+    setArtistName('');
+    setSongs([]);
+    setIsComplete(false);
+  }, []);
+
   const next = () => setStep((s) => Math.min(s + 1, 2)); // 3 steps total, so max index is 2
   const prev = () => setStep((s) => Math.max(s - 1, 0));
 
   const stepComponents = [
     <ChooseBand key="choose-band" artistName={artistName} onArtistNameChange={setArtistName} next={next} />,
     <PreviewSetlist key="preview-setlist" artistName={artistName} onSetlistReady={handleSetlistReady} />,
-    <CreatePlaylist key="create-playlist" artistName={artistName} songs={songs} onComplete={handleComplete} />,
+    <CreatePlaylist key="create-playlist" artistName={artistName} songs={songs} onComplete={handleComplete} onReset={handleReset} />,
   ];
 
   return (

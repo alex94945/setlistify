@@ -58,7 +58,7 @@ export default function PreviewSetlist({ artistName, onSetlistReady }: PreviewSe
   const [totalSteps, setTotalSteps] = useState<number>(5);
 
   useEffect(() => {
-    const fetchSetlist = () => {
+    const fetchSetlist = async () => {
       if (!artistName) return;
       
       setLoading(true);
@@ -66,53 +66,121 @@ export default function PreviewSetlist({ artistName, onSetlistReady }: PreviewSe
       setProgressMessage('Connecting to agent...');
       setProgressStep(0);
       
-      // Create EventSource for Server-Sent Events
-      const eventSource = new EventSource(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/agent/setlist?artistName=${encodeURIComponent(artistName)}`,
-        { withCredentials: true }
-      );
-      
-      // Handle incoming messages
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.type === 'progress') {
-            setProgressMessage(data.message);
-            setProgressStep(data.step);
-            setTotalSteps(data.total);
-          } else if (data.type === 'complete') {
-            const setlistData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
-            setSetlist(setlistData);
-            setLoading(false);
-            eventSource.close();
-          } else if (data.type === 'error') {
-            setError(data.message || 'Failed to load setlist. Please try again.');
-            setLoading(false);
-            eventSource.close();
-          }
-        } catch (parseError) {
-          console.error('Error parsing SSE data:', parseError);
-        }
-      };
-      
-      // Handle connection errors
-      eventSource.onerror = (event) => {
-        console.error('EventSource error:', event);
-        if (eventSource.readyState === EventSource.CLOSED) {
-          setError('Connection lost. Please try again.');
+      try {
+        // First check if user is authenticated
+        const authCheck = await axios.get(
+          `${process.env.NEXT_PUBLIC_API_URL}/auth/status`,
+          { withCredentials: true, timeout: 3000 }
+        );
+        
+        if (!authCheck.data.authenticated) {
+          setError('Please connect to Spotify first to generate setlists.');
           setLoading(false);
+          return;
         }
-      };
-      
-      // Cleanup function
-      return () => {
-        eventSource.close();
-      };
+        
+        // Try SSE first, fall back to regular API if it fails
+        let sseWorked = false;
+        
+        // Create EventSource for Server-Sent Events
+        const eventSource = new EventSource(
+          `${process.env.NEXT_PUBLIC_API_URL}/api/agent/setlist?artistName=${encodeURIComponent(artistName)}`
+        );
+        
+        // Set a timeout to detect if SSE isn't working
+        const sseTimeout = setTimeout(() => {
+          if (!sseWorked) {
+            console.log('SSE timeout, falling back to regular API');
+            eventSource.close();
+            fallbackToRegularAPI();
+          }
+        }, 5000);
+        
+        // Handle incoming messages
+        eventSource.onmessage = (event) => {
+          sseWorked = true;
+          clearTimeout(sseTimeout);
+          
+          try {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'progress') {
+              setProgressMessage(data.message);
+              setProgressStep(data.step);
+              setTotalSteps(data.total);
+            } else if (data.type === 'complete') {
+              const setlistData = typeof data.data === 'string' ? JSON.parse(data.data) : data.data;
+              setSetlist(setlistData);
+              setLoading(false);
+              eventSource.close();
+            } else if (data.type === 'error') {
+              setError(data.message || 'Failed to load setlist. Please try again.');
+              setLoading(false);
+              eventSource.close();
+            }
+          } catch (parseError) {
+            console.error('Error parsing SSE data:', parseError, 'Raw data:', event.data);
+            // If we get non-JSON data, it might be an error response
+            if (event.data.includes('detail')) {
+              eventSource.close();
+              fallbackToRegularAPI();
+            }
+          }
+        };
+        
+        // Handle connection errors
+        eventSource.onerror = (event) => {
+          console.error('EventSource error:', event);
+          clearTimeout(sseTimeout);
+          eventSource.close();
+          if (!sseWorked) {
+            fallbackToRegularAPI();
+          } else {
+            setError('Connection lost. Please try again.');
+            setLoading(false);
+          }
+        };
+        
+        // Fallback to regular API call
+        const fallbackToRegularAPI = async () => {
+          try {
+            setProgressMessage('🎵 Generating your setlist...');
+            const response = await axios.post(
+              `${process.env.NEXT_PUBLIC_API_URL}/api/agent/setlist`,
+              { artistName },
+              { 
+                withCredentials: true,
+                timeout: 300000 // 5 minutes
+              }
+            );
+            setSetlist(response.data);
+            setLoading(false);
+          } catch (error: any) {
+            console.error('API Error:', error);
+            if (error.response?.status === 401) {
+              setError('Please connect to Spotify first to generate setlists.');
+            } else {
+              setError(error.response?.data?.detail || 'Failed to load setlist. Please try again.');
+            }
+            setLoading(false);
+          }
+        };
+        
+        // Cleanup function
+        return () => {
+          clearTimeout(sseTimeout);
+          eventSource.close();
+        };
+        
+      } catch (authError: any) {
+        console.log('Auth check failed:', authError?.message);
+        setError('Please connect to Spotify first to generate setlists.');
+        setLoading(false);
+      }
     };
     
-    const cleanup = fetchSetlist();
-    return cleanup;
+    fetchSetlist();
+    // No cleanup needed since it's handled internally
   }, [artistName]);
 
   useEffect(() => {
